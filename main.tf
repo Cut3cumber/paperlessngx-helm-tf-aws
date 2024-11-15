@@ -3,18 +3,12 @@ provider "aws" {
 }
 
 provider "kubernetes" {
-  host                   = aws_instance.k8s.public_dns
-  client_certificate     = file("./k3s_client.crt")
-  client_key             = file("./k3s_client.key")
-  cluster_ca_certificate = file("./k3s_ca.crt")
+  host = "https://127.0.0.1:6443" # Kubernetes API server running locally on the EC2 instance
 }
 
 provider "helm" {
   kubernetes {
-    host                   = aws_instance.k8s.public_dns
-    client_certificate     = file("./k3s_client.crt")
-    client_key             = file("./k3s_client.key")
-    cluster_ca_certificate = file("./k3s_ca.crt")
+    host = "https://127.0.0.1:6443" # Kubernetes API server for the in-cluster configuration
   }
 }
 
@@ -86,37 +80,7 @@ resource "aws_iam_role" "paperless_role" {
   })
 }
 
-resource "aws_iam_policy" "ssm_secrets_policy" {
-  name        = "ssm-secrets-access-policy"
-  description = "Allow EC2 to use SSM and access Secrets Manager"
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [
-      {
-        Effect   = "Allow",
-        Action   = [
-          "secretsmanager:GetSecretValue",
-          "ssm:SendCommand",
-          "ssm:GetCommandInvocation",
-          "ssm:DescribeInstanceInformation",
-          "ssmmessages:CreateControlChannel",
-          "ssmmessages:OpenControlChannel",
-          "ssmmessages:OpenDataChannel",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ],
-        Resource = "*"
-      }
-    ]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "attach_ssm_secrets_policy" {
-  role       = aws_iam_role.paperless_role.name
-  policy_arn = aws_iam_policy.ssm_secrets_policy.arn
-}
-
-# Attach IAM Role to EC2
+# Attach IAM Instance Profile
 resource "aws_iam_instance_profile" "paperless_instance_profile" {
   name = "paperless-instance-profile"
   role = aws_iam_role.paperless_role.name
@@ -132,22 +96,35 @@ resource "aws_instance" "k8s" {
 
   user_data = <<-EOF
               #!/bin/bash
-              yum install -y amazon-ssm-agent
-              systemctl enable amazon-ssm-agent
-              systemctl start amazon-ssm-agent
+              # Install k3s
+              curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server --tls-san 127.0.0.1" sh -
 
-              curl -sfL https://get.k3s.io | sh -
+              # Expose Kubernetes configuration
               mkdir -p /home/ec2-user/.kube
               cp /etc/rancher/k3s/k3s.yaml /home/ec2-user/.kube/config
               chown ec2-user:ec2-user /home/ec2-user/.kube/config
 
-              aws secretsmanager get-secret-value --secret-id paperless/ssh-private-key --query SecretString --output text > /tmp/id_rsa
-              chmod 600 /tmp/id_rsa
+              # Configure Terraform to access the local Kubernetes cluster
+              export KUBECONFIG=/home/ec2-user/.kube/config
               EOF
 
   tags = {
     Name = "k8s-master"
   }
+}
+
+# Secrets Manager Data Sources
+data "aws_secretsmanager_secret_version" "ssh_key" {
+  secret_id = "paperless/ssh-private-key"
+}
+
+data "aws_secretsmanager_secret_version" "postgres_credentials" {
+  secret_id = "paperless/postgresql"
+}
+
+# Parse PostgreSQL Secrets
+locals {
+  postgres_secret = jsondecode(data.aws_secretsmanager_secret_version.postgres_credentials.secret_string)
 }
 
 # PostgreSQL (RDS)
@@ -156,8 +133,8 @@ resource "aws_db_instance" "postgresql" {
   engine                 = "postgres"
   engine_version         = "13.7"
   instance_class         = "db.t3.micro"
-  username               = "paperless"
-  password               = "paperlesspassword"
+  username               = local.postgres_secret.username
+  password               = local.postgres_secret.password
   publicly_accessible    = false
   skip_final_snapshot    = true
   vpc_security_group_ids = [aws_security_group.k8s.id]
@@ -195,24 +172,6 @@ resource "aws_elasticache_subnet_group" "redis_subnet" {
   subnet_ids  = [aws_subnet.private.id]
 }
 
-# Route 53 Hosted Zone
-data "aws_route53_zone" "mlkr_link" {
-  name         = "mlkr.link."
-  private_zone = false
-}
-
-# Route 53 Record
-resource "aws_route53_record" "docs_mlkr" {
-  zone_id = data.aws_route53_zone.mlkr_link.zone_id
-  name    = "docs.mlkr.link"
-  type    = "A"
-  alias {
-    name                   = aws_instance.k8s.public_dns
-    zone_id                = aws_instance.k8s.hosted_zone_id
-    evaluate_target_health = false
-  }
-}
-
 # Helm Release for Paperless-ngx
 resource "helm_release" "paperless" {
   name       = "paperless"
@@ -223,18 +182,13 @@ resource "helm_release" "paperless" {
   ]
 
   set {
-    name  = "postgresql.host"
-    value = "${aws_db_instance.postgresql.address}"
-  }
-
-  set {
     name  = "postgresql.postgresUser"
-    value = "paperless"
+    value = local.postgres_secret.username
   }
 
   set {
     name  = "postgresql.postgresPassword"
-    value = "paperlesspassword"
+    value = local.postgres_secret.password
   }
 
   set {
