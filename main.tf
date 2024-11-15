@@ -198,7 +198,7 @@ resource "helm_release" "paperless" {
 
   set {
     name  = "redis.host"
-    value = "${aws_elasticache_cluster.redis.configuration_endpoint_address}"
+    value = "${aws_elasticache_cluster.redis.primary_endpoint_address}"
   }
 
   set {
