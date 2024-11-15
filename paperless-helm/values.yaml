@@ -1,0 +1,51 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/paperless-ngx/paperless-ngx
+  tag: latest
+  pullPolicy: IfNotPresent
+
+ingress:
+  enabled: true
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt"
+  hosts:
+    - host: docs.mlkr.link
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls:
+    - secretName: paperless-tls
+      hosts:
+        - docs.mlkr.link
+
+storage:
+  backend: "s3"
+  s3:
+    bucket: "paperless-ngx-storage"
+    region: "us-east-1"
+    accessKeyId: null # IAM Role used, not access keys
+    secretAccessKey: null # IAM Role used, not access keys
+
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "500m"
+  limits:
+    memory: "1Gi"
+    cpu: "1"
+
+persistence:
+  enabled: true
+  storageClass: standard
+  accessMode: ReadWriteOnce
+  size: 10Gi
+
+postgresql:
+  enabled: true
+  postgresUser: paperless
+  postgresPassword: paperlesspassword
+  postgresDatabase: paperless
+
+redis:
+  enabled: true

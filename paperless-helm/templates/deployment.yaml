@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: paperless-ngx
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: paperless-ngx
+  template:
+    metadata:
+      labels:
+        app: paperless-ngx
+    spec:
+      containers:
+      - name: paperless-ngx
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        env:
+        - name: PAPERLESS_STORAGE_BACKEND
+          value: "{{ .Values.storage.backend }}"
+        - name: PAPERLESS_STORAGE_BUCKET
+          value: "{{ .Values.storage.s3.bucket }}"
+        - name: PAPERLESS_STORAGE_REGION
+          value: "{{ .Values.storage.s3.region }}"
+        - name: PAPERLESS_DBHOST
+          value: "postgresql"
+        - name: PAPERLESS_DBUSER
+          value: "{{ .Values.postgresql.postgresUser }}"
+        - name: PAPERLESS_DBPASSWORD
+          value: "{{ .Values.postgresql.postgresPassword }}"
+        - name: PAPERLESS_DBNAME
+          value: "{{ .Values.postgresql.postgresDatabase }}"
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - mountPath: /data
+          name: paperless-storage
+      volumes:
+      - name: paperless-storage
+        persistentVolumeClaim:
+          claimName: paperless-storage
